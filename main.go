@@ -5,19 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/miekg/dns"
-)
-
-const (
-	DBPath     = "./dns_records.db"
-	DNSPort    = "53"
-	APIPort    = ":8080"
-	DefaultTTL = 300
 )
 
 type RecordRequest struct {
@@ -30,8 +27,9 @@ type UpstreamRequest struct {
 	Address string `json:"address"`
 }
 
-func initDB() *sql.DB {
-	db, err := sql.Open("sqlite3", DBPath)
+func initDB(dbPath string) *sql.DB {
+
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -61,7 +59,8 @@ func initDB() *sql.DB {
 }
 
 type DNSResolver struct {
-	db *sql.DB
+	db         *sql.DB
+	defaultTTL int
 }
 
 func (resolver *DNSResolver) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
@@ -75,7 +74,7 @@ func (resolver *DNSResolver) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) 
 			ip, err := resolver.getRecordFromDB(q.Name)
 			if err == nil && ip != "" {
 				log.Printf("[LOCAL] Resolved %s -> %s", q.Name, ip)
-				rr, err := dns.NewRR(fmt.Sprintf("%s %d A %s", q.Name, DefaultTTL, ip))
+				rr, err := dns.NewRR(fmt.Sprintf("%s %d A %s", q.Name, resolver.defaultTTL, ip))
 				if err == nil {
 					m.Answer = append(m.Answer, rr)
 				}
@@ -136,7 +135,7 @@ func (resolver *DNSResolver) resolveUpstream(r *dns.Msg) (*dns.Msg, error) {
 	return nil, fmt.Errorf("all upstreams failed")
 }
 
-func startAPIServer(db *sql.DB) {
+func startAPIServer(db *sql.DB, apiPort string) {
 	http.HandleFunc("/records", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			var req RecordRequest
@@ -206,22 +205,52 @@ func startAPIServer(db *sql.DB) {
 		}
 	})
 
-	log.Printf("API Listening on %s...", APIPort)
-	log.Fatal(http.ListenAndServe(APIPort, nil))
+	log.Printf("API Listening on %s...", apiPort)
+	log.Fatal(http.ListenAndServe(":"+apiPort, nil))
+}
+
+func envString(key, def string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		value = def
+	}
+	return value
+}
+
+func envInt(key string, def int) int {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return def
+	}
+	val, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		slog.Warn("config invalid integer, using default", "key", key, "value", value, "default", def)
+		return def
+	}
+	return int(val)
 }
 
 func main() {
-	db := initDB()
+	godotenv.Load()
+
+	var (
+		dbPath     = envString("DB_PATH", "./dns_records.db")
+		dnsPort    = envString("DNS_PORT", "53")
+		apiPort    = envString("API_PORT", "8888")
+		defaultTTL = envInt("DEFAULT_TTL", 300)
+	)
+
+	db := initDB(dbPath)
 	defer db.Close()
 
-	go startAPIServer(db)
+	go startAPIServer(db, apiPort)
 
-	resolver := &DNSResolver{db: db}
+	resolver := &DNSResolver{db: db, defaultTTL: defaultTTL}
 
 	dns.HandleFunc(".", resolver.handleDNSRequest)
 
-	server := &dns.Server{Addr: ":" + DNSPort, Net: "udp"}
-	log.Printf("DNS Server listening on port %s...", DNSPort)
+	server := &dns.Server{Addr: ":" + dnsPort, Net: "udp"}
+	log.Printf("DNS Server listening on port %s...", dnsPort)
 
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Failed to set up DNS server: %v", err)
