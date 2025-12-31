@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,7 +16,11 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/miekg/dns"
+	"github.com/pressly/goose/v3"
 )
+
+//go:embed migrations/*.sql
+var embedMigrations embed.FS
 
 type RecordRequest struct {
 	Domain string `json:"domain"`
@@ -28,31 +33,18 @@ type UpstreamRequest struct {
 }
 
 func initDB(dbPath string) *sql.DB {
-
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	queryRecords := `
-	CREATE TABLE IF NOT EXISTS records (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		domain TEXT NOT NULL UNIQUE,
-		ip TEXT NOT NULL,
-		record_type TEXT DEFAULT 'A'
-	);`
-
-	queryUpstreams := `
-	CREATE TABLE IF NOT EXISTS upstreams (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		address TEXT NOT NULL UNIQUE
-	);`
-
-	if _, err := db.Exec(queryRecords); err != nil {
-		log.Fatalf("Error creating records table: %v", err)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		log.Fatal(err)
 	}
-	if _, err := db.Exec(queryUpstreams); err != nil {
-		log.Fatalf("Error creating upstreams table: %v", err)
+
+	goose.SetBaseFS(embedMigrations)
+	if err := goose.Up(db, "migrations"); err != nil {
+		log.Fatal(err)
 	}
 
 	return db
