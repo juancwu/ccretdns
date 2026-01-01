@@ -177,7 +177,7 @@ func startAPIServer(db *sql.DB, apiPort string) {
 				req.Domain += "."
 			}
 
-			_, err := db.Exec("DELETE FROM records WHERE domain = ?", req.Domain)
+			_, err := db.Exec("DELETE FROM records WHERE domain = ? AND type = ?", req.Domain, req.Type)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
