@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DNS Admin</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 2em;
+        }
+        h1, h2 {
+            color: #333;
+        }
+        form {
+            margin-bottom: 2em;
+        }
+        input, select, button {
+            margin-right: 1em;
+            margin-bottom: 1em;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 2em;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>DNS Admin</h1>
+
+    <h2>Manage Records</h2>
+    <form action="/records" method="post">
+        <input type="text" name="domain" placeholder="Domain" required>
+        <input type="text" name="ip" placeholder="IP Address" required>
+        <select name="type">
+            <option value="A">A</option>
+            <option value="AAAA">AAAA</option>
+        </select>
+        <button type="submit">Add/Update Record</button>
+    </form>
+
+    {{if .Records}}
+    <table>
+        <thead>
+            <tr>
+                <th>Domain</th>
+                <th>IP</th>
+                <th>Type</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Records}}
+            <tr>
+                <td>{{.Domain}}</td>
+                <td>{{.IP}}</td>
+                <td>{{.RecordType}}</td>
+                <td>
+                    <form action="/records" method="post">
+                        <input type="hidden" name="_method" value="DELETE">
+                        <input type="hidden" name="domain" value="{{.Domain}}">
+                        <input type="hidden" name="type" value="{{.RecordType}}">
+                        <button type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{end}}
+
+    <h2>Manage Upstreams</h2>
+    <form action="/upstreams" method="post">
+        <input type="text" name="address" placeholder="Upstream Address" required>
+        <button type="submit">Add Upstream</button>
+    </form>
+
+    {{if .Upstreams}}
+    <table>
+        <thead>
+            <tr>
+                <th>Address</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Upstreams}}
+            <tr>
+                <td>{{.Address}}</td>
+                <td>
+                    <form action="/upstreams" method="post">
+                        <input type="hidden" name="_method" value="DELETE">
+                        <input type="hidden" name="address" value="{{.Address}}">
+                        <button type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{end}}
+</body>
+</html>

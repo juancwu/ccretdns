@@ -3,8 +3,8 @@ package main
 import (
 	"database/sql"
 	"embed"
-	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"log/slog"
 	"net/http"
@@ -19,18 +19,27 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/*.sql index.html
 var embedMigrations embed.FS
 
-type RecordRequest struct {
-	Domain string `json:"domain"`
-	IP     string `json:"ip"`
-	Type   string `json:"type"`
+var indexTmpl = template.Must(template.ParseFS(embedMigrations, "index.html"))
+
+type Record struct {
+	Domain     string
+	IP         string
+	RecordType string
 }
 
-type UpstreamRequest struct {
-	Address string `json:"address"`
+type Upstream struct {
+	Address string
 }
+
+type PageData struct {
+	Records   []Record
+	Upstreams []Upstream
+}
+
+
 
 func initDB(dbPath string) *sql.DB {
 	db, err := sql.Open("sqlite3", dbPath)
@@ -136,82 +145,136 @@ func (resolver *DNSResolver) resolveUpstream(r *dns.Msg) (*dns.Msg, error) {
 }
 
 func startAPIServer(db *sql.DB, apiPort string) {
-	http.HandleFunc("/records", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			var req RecordRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+
+		recordsRows, err := db.Query("SELECT domain, ip, record_type FROM records")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer recordsRows.Close()
+
+		var records []Record
+		for recordsRows.Next() {
+			var rec Record
+			if err := recordsRows.Scan(&rec.Domain, &rec.IP, &rec.RecordType); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			records = append(records, rec)
+		}
 
+		upstreamsRows, err := db.Query("SELECT address FROM upstreams")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer upstreamsRows.Close()
+
+		var upstreams []Upstream
+		for upstreamsRows.Next() {
+			var ups Upstream
+			if err := upstreamsRows.Scan(&ups.Address); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			upstreams = append(upstreams, ups)
+		}
+
+		data := PageData{
+			Records:   records,
+			Upstreams: upstreams,
+		}
+
+		if err := indexTmpl.Execute(w, data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+	http.HandleFunc("/records", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		domain := r.FormValue("domain")
+		ip := r.FormValue("ip")
+		recordType := r.FormValue("type")
+		method := r.FormValue("_method")
+
+		if method == "" {
+			method = r.Method
+		}
+
+		if method == http.MethodPost {
 			// Normalize domain to ensure trailing dot
-			if !strings.HasSuffix(req.Domain, ".") {
-				req.Domain += "."
+			if !strings.HasSuffix(domain, ".") {
+				domain += "."
 			}
 
-			if req.Type == "" {
-				req.Type = "A"
+			if recordType == "" {
+				recordType = "A"
 			}
-			req.Type = strings.ToUpper(req.Type)
+			recordType = strings.ToUpper(recordType)
 
-			if req.Type != "A" && req.Type != "AAAA" {
+			if recordType != "A" && recordType != "AAAA" {
 				http.Error(w, "Invalid record type. Must be A or AAAA", http.StatusBadRequest)
 				return
 			}
-
-			_, err := db.Exec("INSERT OR REPLACE INTO records (domain, ip, record_type) VALUES (?, ?, ?)", req.Domain, req.IP, req.Type)
+			_, err := db.Exec("INSERT OR REPLACE INTO records (domain, ip, record_type) VALUES (?, ?, ?)", domain, ip, recordType)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, "Added %s (%s) -> %s", req.Domain, req.Type, req.IP)
-
-		} else if r.Method == http.MethodDelete {
-			var req RecordRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if !strings.HasSuffix(req.Domain, ".") {
-				req.Domain += "."
+			w.Header().Set("Location", "/")
+			w.WriteHeader(http.StatusSeeOther)
+		} else if method == http.MethodDelete {
+			if !strings.HasSuffix(domain, ".") {
+				domain += "."
 			}
 
-			_, err := db.Exec("DELETE FROM records WHERE domain = ? AND type = ?", req.Domain, req.Type)
+			_, err := db.Exec("DELETE FROM records WHERE domain = ? AND record_type = ?", domain, recordType)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			fmt.Fprintf(w, "Deleted %s", req.Domain)
+			w.Header().Set("Location", "/")
+			w.WriteHeader(http.StatusSeeOther)
 		}
 	})
 
 	http.HandleFunc("/upstreams", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			var req UpstreamRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			_, err := db.Exec("INSERT INTO upstreams (address) VALUES (?)", req.Address)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		address := r.FormValue("address")
+		method := r.FormValue("_method")
+
+		if method == "" {
+			method = r.Method
+		}
+
+		if method == http.MethodPost {
+			_, err := db.Exec("INSERT INTO upstreams (address) VALUES (?)", address)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, "Added upstream %s", req.Address)
-		} else if r.Method == http.MethodDelete {
-			var req UpstreamRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			_, err := db.Exec("DELETE FROM upstreams WHERE address = ?", req.Address)
+			w.Header().Set("Location", "/")
+			w.WriteHeader(http.StatusSeeOther)
+		} else if method == http.MethodDelete {
+			_, err := db.Exec("DELETE FROM upstreams WHERE address = ?", address)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			fmt.Fprintf(w, "Deleted upstream %s", req.Address)
+			w.Header().Set("Location", "/")
+			w.WriteHeader(http.StatusSeeOther)
 		}
 	})
 
