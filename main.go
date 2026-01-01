@@ -74,7 +74,7 @@ func (resolver *DNSResolver) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) 
 			ip, err := resolver.getRecordFromDB(q.Name, qTypeString)
 			if err == nil && ip != "" {
 				log.Printf("[LOCAL] Resolved %s -> %s", q.Name, ip)
-				rr, err := dns.NewRR(fmt.Sprintf("%s %d A %s", q.Name, resolver.defaultTTL, ip))
+				rr, err := dns.NewRR(fmt.Sprintf("%s %d %s %s", q.Name, resolver.defaultTTL, qTypeString, ip))
 				if err == nil {
 					m.Answer = append(m.Answer, rr)
 				}
