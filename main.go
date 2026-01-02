@@ -39,8 +39,6 @@ type PageData struct {
 	Upstreams []Upstream
 }
 
-
-
 func initDB(dbPath string) *sql.DB {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -72,33 +70,39 @@ func (resolver *DNSResolver) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) 
 	switch r.Opcode {
 	case dns.OpcodeQuery:
 		for _, q := range m.Question {
-			var qTypeString string
-			switch q.Qtype {
-			case dns.TypeA:
-				qTypeString = "A"
-			case dns.TypeAAAA:
-				qTypeString = "AAAA"
+			isLanOrInternal := strings.HasSuffix(q.Name, ".lan.") || strings.HasSuffix(q.Name, ".internal.")
+			isARecord := q.Qtype == dns.TypeA
+			isAaaaRecord := q.Qtype == dns.TypeAAAA
+
+			if (isARecord || isAaaaRecord) && isLanOrInternal {
+				var qTypeString string
+				if isARecord {
+					qTypeString = "A"
+				} else {
+					qTypeString = "AAAA"
+				}
+
+				ip, err := resolver.getRecordFromDB(q.Name, qTypeString)
+				if err == nil && ip != "" {
+					log.Printf("[LOCAL] Resolved %s -> %s", q.Name, ip)
+					rr, err := dns.NewRR(fmt.Sprintf("%s %d %s %s", q.Name, resolver.defaultTTL, qTypeString, ip))
+					if err == nil {
+						m.Answer = append(m.Answer, rr)
+					}
+					continue
+				}
 			}
 
-			ip, err := resolver.getRecordFromDB(q.Name, qTypeString)
-			if err == nil && ip != "" {
-				log.Printf("[LOCAL] Resolved %s -> %s", q.Name, ip)
-				rr, err := dns.NewRR(fmt.Sprintf("%s %d %s %s", q.Name, resolver.defaultTTL, qTypeString, ip))
-				if err == nil {
-					m.Answer = append(m.Answer, rr)
-				}
+			// Fallback to upstream for all other cases
+			resp, err := resolver.resolveUpstream(r)
+			if err == nil && resp != nil {
+				log.Printf("[UPSTREAM] Forwarded %s", q.Name)
+				m.Answer = resp.Answer
+				m.Ns = resp.Ns
+				m.Extra = resp.Extra
 			} else {
-				resp, err := resolver.resolveUpstream(r)
-				if err == nil && resp != nil {
-					log.Printf("[UPSTREAM] Forwarded %s", q.Name)
-					m.Answer = resp.Answer
-					m.Ns = resp.Ns
-					m.Extra = resp.Extra
-					m.Rcode = resp.Rcode
-				} else {
-					log.Printf("[ERROR] Could not resolve %s", q.Name)
-					m.Rcode = dns.RcodeServerFailure
-				}
+				log.Printf("[ERROR] Could not resolve %s", q.Name)
+				m.Rcode = dns.RcodeServerFailure
 			}
 		}
 	}
